@@ -220,6 +220,39 @@ print_payload(const u_char *payload, int len)
 return;
 }
 
+// Computing the internet checksum (RFC 1071).
+// Note that the internet checksum does not preclude collisions.
+uint16_t
+checksum (uint16_t *addr, int len)
+{
+  int count = len;
+  register uint32_t sum = 0;
+  uint16_t answer = 0;
+
+  // Sum up 2-byte values until none or only one byte left.
+  while (count > 1) {
+    sum += *(addr++);
+    count -= 2;
+  }
+
+  // Add left-over byte, if any.
+  if (count > 0) {
+    sum += *(uint8_t *) addr;
+  }
+
+  // Fold 32-bit sum into 16 bits; we lose information by doing this,
+  // increasing the chances of a collision.
+  // sum = (lower 16 bits) + (upper 16 bits shifted right 16 bits)
+  while (sum >> 16) {
+    sum = (sum & 0xffff) + (sum >> 16);
+  }
+
+  // Checksum is one's compliment of sum.
+  answer = ~sum;
+
+  return (answer);
+}
+
 /*
  * send icmp echo 
  */
@@ -234,10 +267,13 @@ send_icmp_echo(u_char *packet)
     struct sockaddr_in sin;
     int sd = 0;
     int on = 1;
+    int error_no = 0;
     
 	int size_ip;
-	int size_payload;
+    int size_data;
+    int size_icmp;
 	
+
 	/* define ethernet header */
 	ethernet = (struct sniff_ethernet*)(packet);
 	
@@ -251,24 +287,34 @@ send_icmp_echo(u_char *packet)
 	
 	/* define/compute icmp header */
 	icmp = (struct icmp*)(packet + SIZE_ETHERNET + size_ip);
-    
+    	
+	/* compute tcp payload (segment) size */
+	size_data = ntohs(ip->ip_len); 
+	size_icmp = ntohs(ip->ip_len-8); 
+/***
+		printf("   Payload (%d bytes):\n", size_data);
+		print_payload(ip, size_data);
     // Modify icmp hearder
     icmp->icmp_type = ICMP_ECHO;
     icmp->icmp_code = 0;
     icmp->icmp_id = htons (1000);
     icmp->icmp_seq = htons (0);
     icmp->icmp_cksum = 0;
+    icmp->icmp_cksum = checksum((uint16_t *)icmp, size_icmp);
 
     // modify source ip and destination ip
     ip_tmp = ip->ip_src;
     ip->ip_src = ip->ip_dst;
     ip->ip_dst = ip_tmp;
     ip->ip_sum = 0;
-
+    ip->ip_sum = checksum((uint16_t *)ip, size_ip);
+***/
     memset (&sin, 0, sizeof (struct sockaddr_in));
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = ip->ip_dst.s_addr;
 
+		printf("   Payload (%d bytes):\n", size_data);
+		print_payload(ip, size_data);
     // Submit request for a raw socket descriptor.
     if ((sd = socket (AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
         printf("socket() failed ");
@@ -280,10 +326,15 @@ send_icmp_echo(u_char *packet)
         printf ("setsockopt() failed to set IP_HDRINCL ");
         return;
     }
+	/* print source and destination IP addresses */
+	printf("       From: %s\n", inet_ntoa(ip->ip_src));
+	printf("         To: %s\n", inet_ntoa(ip->ip_dst));
+	printf("         sin: %s\n", inet_ntoa(sin.sin_addr));
 
     // Send packet.
-    if (sendto (sd, ip, strlen(ip), 0, (struct sockaddr *) &sin, sizeof (struct sockaddr)) < 0)  {
-        printf ("sendto() failed ");
+    error_no = sendto (sd, ip, size_data, 0, (struct sockaddr *) &sin, sizeof (struct sockaddr));
+    if (error_no < 0)  {
+        printf ("sendto() failed %d\n",size_icmp);
     }
 
     // Close socket descriptor.
